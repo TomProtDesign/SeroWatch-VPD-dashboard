@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SeroWatch Browser</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        :root { --primary-color: #2c3e50; --bg-color: #ffffff; --panel-bg: #f8f9fa; }
+        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; margin: 0; background-color: var(--bg-color); color: var(--primary-color); }
+        
+        .header { padding: 40px 20px 20px 20px; text-align: center; border-bottom: 1px solid #eee; }
+        .header h1 { margin: 0; font-weight: 300; font-size: 2.5em; letter-spacing: -1px; }
+        .header p { margin: 10px 0 0; color: #7f8c8d; font-size: 1.1em; font-weight: 300; }
+
+        .container { display: flex; flex-direction: column; max-width: 1400px; margin: 0 auto; padding: 20px; }
+        
+        .filter-panel { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); 
+            gap: 20px; 
+            background: var(--panel-bg); 
+            padding: 25px; 
+            border-radius: 4px; 
+            border: 1px solid #e1e4e8;
+            margin-bottom: 30px;
+        }
+
+        .filter-group { display: flex; flex-direction: column; }
+        label { font-size: 0.75rem; text-transform: uppercase; font-weight: bold; letter-spacing: 1px; color: #95a5a6; margin-bottom: 8px; }
+        select { 
+            padding: 8px; border-radius: 4px; border: 1px solid #d1d5da; background: white; 
+            font-size: 0.9rem; color: #24292e; outline: none;
+        }
+
+        #plot { width: 100%; height: 700px; }
+        .footer { text-align: center; padding: 40px; color: #bdc3c7; font-size: 0.8em; font-weight: 300; }
+        #counter { font-size: 0.85em; margin-top: 10px; color: #7f8c8d; text-align: right; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>SeroWatch Antibody Plot Browser</h1>
+    <p>Serological profil of 3000 samples for Respiratory Infection</p>
+</div>
+
+<div class="container">
+    <div class="filter-panel">
+        <div class="filter-group"><label>X-Axis</label><select id="x-axis"></select></div>
+        <div class="filter-group"><label>Y-Axis</label><select id="y-axis"></select></div>
+        <div class="filter-group"><label>Department</label><select id="f-dept"><option value="All">All Regions</option></select></div>
+        <div class="filter-group"><label>Sex</label><select id="f-sexe"><option value="All">All Sexes</option></select></div>
+        <div class="filter-group"><label>Age Group</label><select id="f-age"><option value="All">All Ages</option></select></div>
+        <div class="filter-group"><label>Color By</label><select id="color-by">
+            <option value="DEPARTMENT OF SAMPLING">Department</option>
+            <option value="SEXE">Sex</option>
+            <option value="age_group">Age Group</option>
+        </select></div>
+    </div>
+
+    <div id="counter">Loading data...</div>
+    <div id="plot"></div>
+</div>
+
+<div class="footer">
+    &copy; 2026 SeroWatch Project | Data source: SeroWatch_ARI_W38Y24_data.csv
+</div>
+
+<script>
+    let rawData = [];
+    const CSV_FILE = "SeroWatch_ARI_W38Y24_data.csv";
+
+    // 1. Load Data
+    d3.csv(CSV_FILE).then(data => {
+        data.forEach(d => {
+            // Convert numbers
+            Object.keys(d).forEach(key => {
+                if (!isNaN(d[key]) && d[key] !== "") d[key] = +d[key];
+            });
+            // Age groups
+            const ageVal = d.AGE || 0;
+            const start = Math.floor(ageVal / 10) * 10;
+            d.age_group = `${start}-${start + 9} y.o.`;
+        });
+        rawData = data;
+        setupSelectors();
+        draw();
+    }).catch(err => {
+        document.getElementById('counter').innerHTML = `<b style="color:red">Error: ${err.message}</b>`;
+    });
+
+    // 2. Setup Menus
+    function setupSelectors() {
+        const keys = Object.keys(rawData[0]);
+        const excluded = ['N°INCLUSION', 'SEXE', 'DEPARTMENT OF SAMPLING', 'AGE', 'age_group'];
+        const measures = keys.filter(k => !excluded.includes(k));
+        
+        const xSelect = document.getElementById('x-axis');
+        const ySelect = document.getElementById('y-axis');
+        
+        measures.forEach(m => {
+            xSelect.add(new Option(m, m));
+            ySelect.add(new Option(m, m));
+        });
+        if (measures.length > 2) ySelect.selectedIndex = 2;
+
+        fillOptions('f-dept', 'DEPARTMENT OF SAMPLING');
+        fillOptions('f-sexe', 'SEXE');
+        fillOptions('f-age', 'age_group', true);
+
+        document.querySelectorAll('select').forEach(s => s.addEventListener('change', draw));
+    }
+
+    function fillOptions(id, key, isAge = false) {
+        const select = document.getElementById(id);
+        const values = [...new Set(rawData.map(d => d[key]))].filter(v => v !== "" && v !== null);
+        
+        values.sort((a, b) => {
+            if (isAge) return parseInt(a) - parseInt(b);
+            return String(a).localeCompare(String(b)); // Fix for numeric depts
+        });
+
+        values.forEach(v => select.add(new Option(v, v)));
+    }
+
+    // 3. Draw Plot
+    function draw() {
+        const conf = {
+            x: document.getElementById('x-axis').value,
+            y: document.getElementById('y-axis').value,
+            dept: document.getElementById('f-dept').value,
+            sexe: document.getElementById('f-sexe').value,
+            age: document.getElementById('f-age').value,
+            color: document.getElementById('color-by').value
+        };
+
+        // Helper function to add units automatically
+        const formatTitle = (name) => {
+            if (name.toLowerCase().includes('avid')) {
+                return `${name} (Avidity Index)`;
+            } 
+            else if (name.includes('IgG') || name.includes('IgM') || name.includes('IgA')) {
+                return `${name} (RLU/s)`;
+            }
+            return name;
+        };
+
+        const filtered = rawData.filter(d => 
+            (conf.dept === 'All' || d['DEPARTMENT OF SAMPLING'] == conf.dept) &&
+            (conf.sexe === 'All' || d.SEXE === conf.sexe) &&
+            (conf.age === 'All' || d.age_group === conf.age)
+        );
+
+        document.getElementById('counter').innerText = `Showing ${filtered.length} samples`;
+
+        const groups = [...new Set(filtered.map(d => d[conf.color]))].sort();
+        const traces = groups.map(g => {
+            const sub = filtered.filter(d => d[conf.color] === g);
+            return {
+                x: sub.map(d => d[conf.x]),
+                y: sub.map(d => d[conf.y]),
+                name: String(g),
+                mode: 'markers',
+                type: 'scatter',
+                marker: { size: 7, opacity: 0.5, line: {width: 0.5, color: 'white'} },
+                text: sub.map(d => `ID: ${d['N°INCLUSION']}<br>Age: ${d.AGE}`)
+            };
+        });
+
+        const layout = {
+            template: 'plotly_white',
+            xaxis: { 
+                title: { text: formatTitle(conf.x), font: { size: 13, color: '#34495e' } }, 
+                type: 'linear', 
+                gridcolor: '#f0f0f0' 
+            },
+            yaxis: { 
+                title: { text: formatTitle(conf.y), font: { size: 13, color: '#34495e' } }, 
+                type: 'linear', 
+                gridcolor: '#f0f0f0' 
+            },
+            margin: { t: 40, r: 20, b: 80, l: 80 },
+            hovermode: 'closest',
+            legend: { orientation: 'h', y: -0.2, x: 0.5, xanchor: 'center' }
+        };
+
+        Plotly.newPlot('plot', traces, layout, {responsive: true});
+    }
+</script>
+</body>
+</html>
